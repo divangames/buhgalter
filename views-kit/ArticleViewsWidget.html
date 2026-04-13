@@ -1,0 +1,124 @@
+<!-- Виджет просмотров для страницы статьи (LPMotor) -->
+<style>
+    .lpm-article-meta-row {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        color: #333;
+        font-family: 'Geologica', sans-serif;
+        font-weight: 300;
+        flex-wrap: wrap;
+    }
+    .lpm-article-meta-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .lpm-article-meta-sep {
+        opacity: .35;
+    }
+    @media (max-width: 767px) {
+        .lpm-article-views-label {
+            display: none;
+        }
+    }
+</style>
+
+<div class="lpm-article-views" title="Просмотры статьи">
+    <span class="lpm-article-meta-row">
+        <span class="lpm-article-meta-item">
+            <i class="ph ph-calendar-blank" style="color:#FF5A00;font-size:18px;"></i>
+            <span class="lpm-article-date" style="font-weight:300;">8 Апреля, 2026</span>
+        </span>
+        <span class="lpm-article-meta-sep">|</span>
+        <span class="lpm-article-meta-item">
+            <i class="ph ph-eye" style="color:#FF5A00;font-size:18px;"></i>
+            <span class="lpm-article-views-label" style="font-weight:300;">Просмотры:</span>
+            <span class="lpm-article-views-value" style="font-variant-numeric:tabular-nums;font-weight:400;">—</span>
+        </span>
+    </span>
+</div>
+
+<script>
+(function () {
+    var viewsJsonUrls = [
+        'https://divangames.github.io/buhgalter/views.json',
+        'https://cdn.jsdelivr.net/gh/divangames/buhgalter@main/views.json'
+    ];
+    var refreshMs = 5 * 60 * 1000;
+
+    function parseJsonResponse(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+    }
+
+    function fetchViewsByUrl(url) {
+        return fetch(url, { cache: 'no-store', mode: 'cors' })
+            .then(parseJsonResponse);
+    }
+
+    function fetchViewsJson() {
+        function tryNext(index) {
+            if (index >= viewsJsonUrls.length) {
+                throw new Error('All views sources failed');
+            }
+            var url = viewsJsonUrls[index];
+            return fetchViewsByUrl(url).catch(function () {
+                var proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+                return fetchViewsByUrl(proxyUrl).catch(function () {
+                    return tryNext(index + 1);
+                });
+            });
+        }
+        return tryNext(0);
+    }
+
+    function normalizePath(path) {
+        var base = window.location.origin;
+        try {
+            var url = new URL(path || window.location.pathname, base);
+            var pathname = decodeURIComponent(url.pathname || '/');
+            return pathname.replace(/\/+$/, '') || '/';
+        } catch (e) {
+            return String(path || window.location.pathname || '/').replace(/\/+$/, '') || '/';
+        }
+    }
+
+    function formatViews(value) {
+        var number = Number(value);
+        if (!isFinite(number)) return '—';
+        return number.toLocaleString('ru-RU');
+    }
+
+    function renderViews(text) {
+        var valueNodes = document.querySelectorAll('.lpm-article-views-value');
+        if (!valueNodes.length) return;
+        valueNodes.forEach(function (node) {
+            node.textContent = text;
+        });
+    }
+
+    function updateArticleViews() {
+        var articlePath = normalizePath(window.location.pathname);
+        fetchViewsJson()
+            .then(function (data) {
+                var viewsMap = (data && data.views) || {};
+                renderViews(formatViews(viewsMap[articlePath]));
+            })
+            .catch(function () {
+                renderViews('—');
+            });
+    }
+
+    function start() {
+        updateArticleViews();
+        setInterval(updateArticleViews, refreshMs);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start);
+    } else {
+        start();
+    }
+})();
+</script>
