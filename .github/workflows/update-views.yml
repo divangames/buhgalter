@@ -3,7 +3,7 @@ name: Update views.json from Yandex Metrika
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
@@ -11,6 +11,7 @@ permissions:
 jobs:
   update-views:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,9 +19,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
-      - name: Update views.json
+      - name: Run updater
         env:
           YANDEX_TOKEN: ${{ secrets.YANDEX_TOKEN }}
           YANDEX_COUNTER_ID: ${{ secrets.YANDEX_COUNTER_ID }}
