@@ -1,39 +1,76 @@
-name: Update views.json from Yandex Metrika
+const fs = require("fs");
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "*/30 * * * *"
+const TOKEN = process.env.YANDEX_TOKEN;
+const COUNTER_ID = process.env.YANDEX_COUNTER_ID;
 
-permissions:
-  contents: write
+if (!TOKEN || !COUNTER_ID) {
+  throw new Error("YANDEX_TOKEN or YANDEX_COUNTER_ID is missing");
+}
 
-jobs:
-  update-views:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+const { articles } = JSON.parse(fs.readFileSync("articles.json", "utf8"));
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+// Читаем прошлый views.json (если есть), чтобы не уменьшать счетчик
+let previous = { views: {} };
+if (fs.existsSync("views.json")) {
+  try {
+    previous = JSON.parse(fs.readFileSync("views.json", "utf8"));
+  } catch (_) {
+    previous = { views: {} };
+  }
+}
 
-      - name: Update views.json
-        env:
-          YANDEX_TOKEN: ${{ secrets.YANDEX_TOKEN }}
-          YANDEX_COUNTER_ID: ${{ secrets.YANDEX_COUNTER_ID }}
-        run: node scripts/update-views.js
+async function fetchVisitsForPath(path) {
+  const params = new URLSearchParams({
+    ids: String(COUNTER_ID),
+    metrics: "ym:s:visits",
+    dimensions: "ym:s:URLPath",
+    filters: `ym:s:URLPath=='${path}'`,
+    date1: "30daysAgo",
+    date2: "today",
+    accuracy: "full"
+  });
 
-      - name: Commit changes
-        run: |
-          if git diff --quiet views.json; then
-            echo "No changes"
-            exit 0
-          fi
-          git add views.json
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "Update views.json from Yandex Metrika"
-          git push
+  const url = `https://api-metrika.yandex.net/stat/v1/data?${params.toString()}`;
+
+  const res = await fetch(url, {
+    headers: { Authorization: `OAuth ${TOKEN}` }
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Metrika API error ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+  const metric = data?.data?.[0]?.metrics?.[0] ?? 0;
+  return Math.max(0, Math.round(Number(metric) || 0));
+}
+
+(async () => {
+  const nextViews = {};
+
+  for (const path of articles) {
+    const oldValue = Number(previous?.views?.[path] || 0);
+
+    try {
+      const currentFromMetrika = await fetchVisitsForPath(path);
+      // Никогда не уменьшаем число
+      nextViews[path] = Math.max(oldValue, currentFromMetrika);
+
+      console.log(
+        `OK ${path}: old=${oldValue}, metrika=${currentFromMetrika}, saved=${nextViews[path]}`
+      );
+    } catch (e) {
+      // При ошибке API оставляем старое значение
+      nextViews[path] = oldValue;
+      console.error(`FAIL ${path}: ${e.message}. Keep old=${oldValue}`);
+    }
+  }
+
+  const output = {
+    updatedAt: new Date().toISOString(),
+    views: nextViews
+  };
+
+  fs.writeFileSync("views.json", JSON.stringify(output, null, 2) + "\n", "utf8");
+})();
