@@ -1,59 +1,39 @@
-const fs = require("fs");
+name: Update views.json from Yandex Metrika
 
-const TOKEN = process.env.YANDEX_TOKEN;
-const COUNTER_ID = process.env.YANDEX_COUNTER_ID;
-const SITE_HOST = "https://твоя-бухгалтерия.рф";
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
 
-if (!TOKEN || !COUNTER_ID) {
-  throw new Error("YANDEX_TOKEN or YANDEX_COUNTER_ID is missing");
-}
+permissions:
+  contents: write
 
-const { articles } = JSON.parse(fs.readFileSync("articles.json", "utf8"));
+jobs:
+  update-views:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-async function fetchVisitsForPath(path) {
-  // Визиты за последние 30 дней; можно изменить период.
-  const params = new URLSearchParams({
-    ids: COUNTER_ID,
-    metrics: "ym:s:visits",
-    dimensions: "ym:s:URLPath",
-    filters: `ym:s:URLPath=='${path}'`,
-    date1: "30daysAgo",
-    date2: "today",
-    accuracy: "full"
-  });
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-  const url = `https://api-metrika.yandex.net/stat/v1/data?${params.toString()}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `OAuth ${TOKEN}` }
-  });
+      - name: Update views.json
+        env:
+          YANDEX_TOKEN: ${{ secrets.YANDEX_TOKEN }}
+          YANDEX_COUNTER_ID: ${{ secrets.YANDEX_COUNTER_ID }}
+        run: node scripts/update-views.js
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Metrika API error ${res.status}: ${text}`);
-  }
-
-  const data = await res.json();
-  const value = data?.data?.[0]?.metrics?.[0] ?? 0;
-  return Math.round(Number(value) || 0);
-}
-
-(async () => {
-  const views = {};
-
-  for (const path of articles) {
-    try {
-      views[path] = await fetchVisitsForPath(path);
-      console.log(`OK ${path}: ${views[path]}`);
-    } catch (e) {
-      console.error(`FAIL ${path}:`, e.message);
-      views[path] = 0;
-    }
-  }
-
-  const output = {
-    updatedAt: new Date().toISOString(),
-    views
-  };
-
-  fs.writeFileSync("views.json", JSON.stringify(output, null, 2) + "\n", "utf8");
-})();
+      - name: Commit changes
+        run: |
+          if git diff --quiet views.json; then
+            echo "No changes"
+            exit 0
+          fi
+          git add views.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update views.json from Yandex Metrika"
+          git push
