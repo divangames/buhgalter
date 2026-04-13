@@ -2,75 +2,98 @@ const fs = require("fs");
 
 const TOKEN = process.env.YANDEX_TOKEN;
 const COUNTER_ID = process.env.YANDEX_COUNTER_ID;
+const SITE_HOST = "https://твоя-бухгалтерия.рф";
 
 if (!TOKEN || !COUNTER_ID) {
-  throw new Error("YANDEX_TOKEN or YANDEX_COUNTER_ID is missing");
+  throw new Error("Missing env: YANDEX_TOKEN or YANDEX_COUNTER_ID");
+}
+
+if (!fs.existsSync("articles.json")) {
+  throw new Error("articles.json not found");
 }
 
 const { articles } = JSON.parse(fs.readFileSync("articles.json", "utf8"));
+if (!Array.isArray(articles) || !articles.length) {
+  throw new Error("articles.json: 'articles' must be non-empty array");
+}
 
-// Читаем прошлый views.json (если есть), чтобы не уменьшать счетчик
+function normalizePath(p) {
+  if (!p) return "/";
+  const s = String(p).trim();
+  return (s.startsWith("/") ? s : `/${s}`).replace(/\/+$/, "") || "/";
+}
+
+// прошлые значения нужны, чтобы не затирать данные
 let previous = { views: {} };
 if (fs.existsSync("views.json")) {
   try {
     previous = JSON.parse(fs.readFileSync("views.json", "utf8"));
-  } catch (_) {
+  } catch {
     previous = { views: {} };
   }
 }
 
-async function fetchVisitsForPath(path) {
+async function fetchMetrikaRows() {
+  // Берем статистику по страницам за 30 дней
   const params = new URLSearchParams({
     ids: String(COUNTER_ID),
-    metrics: "ym:s:visits",
-    dimensions: "ym:s:URLPath",
-    filters: `ym:s:URLPath=='${path}'`,
+    metrics: "ym:pv:pageviews",
+    dimensions: "ym:pv:URLPath",
     date1: "30daysAgo",
     date2: "today",
+    limit: "100000",
     accuracy: "full"
   });
 
   const url = `https://api-metrika.yandex.net/stat/v1/data?${params.toString()}`;
-
   const res = await fetch(url, {
     headers: { Authorization: `OAuth ${TOKEN}` }
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Metrika API error ${res.status}: ${text}`);
+    const txt = await res.text();
+    throw new Error(`Metrika API ${res.status}: ${txt}`);
   }
 
   const data = await res.json();
-  const metric = data?.data?.[0]?.metrics?.[0] ?? 0;
-  return Math.max(0, Math.round(Number(metric) || 0));
+  return Array.isArray(data.data) ? data.data : [];
 }
 
 (async () => {
+  const rows = await fetchMetrikaRows();
+
+  // карта path -> просмотры из Метрики
+  const metrikaMap = {};
+  for (const row of rows) {
+    const pathRaw = row?.dimensions?.[0]?.name;
+    const views = Number(row?.metrics?.[0] ?? 0);
+    if (!pathRaw) continue;
+
+    const path = normalizePath(decodeURIComponent(pathRaw));
+    metrikaMap[path] = Math.max(0, Math.round(views));
+  }
+
   const nextViews = {};
+  for (const articlePathRaw of articles) {
+    const path = normalizePath(articlePathRaw);
+    const oldVal = Number(previous?.views?.[path] || 0);
+    const newVal = metrikaMap[path];
 
-  for (const path of articles) {
-    const oldValue = Number(previous?.views?.[path] || 0);
-
-    try {
-      const currentFromMetrika = await fetchVisitsForPath(path);
-      // Никогда не уменьшаем число
-      nextViews[path] = Math.max(oldValue, currentFromMetrika);
-
-      console.log(
-        `OK ${path}: old=${oldValue}, metrika=${currentFromMetrika}, saved=${nextViews[path]}`
-      );
-    } catch (e) {
-      // При ошибке API оставляем старое значение
-      nextViews[path] = oldValue;
-      console.error(`FAIL ${path}: ${e.message}. Keep old=${oldValue}`);
+    if (Number.isFinite(newVal)) {
+      // не уменьшаем
+      nextViews[path] = Math.max(oldVal, newVal);
+      console.log(`OK ${path}: old=${oldVal}, metrika=${newVal}, saved=${nextViews[path]}`);
+    } else {
+      // если конкретного path нет в ответе Метрики, оставляем старое
+      nextViews[path] = oldVal;
+      console.log(`MISS ${path}: keep old=${oldVal}`);
     }
   }
 
-  const output = {
+  const out = {
     updatedAt: new Date().toISOString(),
     views: nextViews
   };
 
-  fs.writeFileSync("views.json", JSON.stringify(output, null, 2) + "\n", "utf8");
+  fs.writeFileSync("views.json", JSON.stringify(out, null, 2) + "\n", "utf8");
 })();
